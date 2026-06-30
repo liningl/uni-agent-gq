@@ -80,6 +80,7 @@ class KVCAwareBalancer:
             self._config.collector, collection_names,
             server_addresses=server_addresses,
             kv_event_endpoints=kv_event_endpoints,
+            mooncake_config=self._config.mooncake,
         )
         self._provider.start()
 

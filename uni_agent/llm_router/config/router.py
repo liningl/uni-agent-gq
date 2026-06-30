@@ -17,6 +17,7 @@ from uni_agent.llm_router.config.base import (
 )
 from uni_agent.llm_router.config.cache import CacheStoreConfig
 from uni_agent.llm_router.config.collector import CollectorConfig
+from uni_agent.llm_router.config.mooncake_config import MooncakeCollectorConfig
 
 
 # ============================================================
@@ -44,6 +45,7 @@ class KVCAwareConfig:
     strategies: list[StrategyConfig]  # required, no default
     collector: CollectorConfig = field(default_factory=lambda: _DEFAULT_COLLECTOR)
     cache_store: CacheStoreConfig = field(default_factory=lambda: _DEFAULT_CACHE_STORE)
+    mooncake: MooncakeCollectorConfig | None = None
 
     @classmethod
     def from_config(cls, cfg: DictConfig | dict) -> KVCAwareConfig:
@@ -114,11 +116,22 @@ class KVCAwareConfig:
             strategies_raw, StrategyConfig, "strategies"
         )
 
+        # ── Step 3: parse optional mooncake config ─────────────────
+        mooncake_cfg: MooncakeCollectorConfig | None = None
+        raw_mooncake = cfg.get("mooncake", None) if isinstance(cfg, (dict, DictConfig)) else None
+        if raw_mooncake is not None:
+            raw_dict = OmegaConf.to_container(OmegaConf.create(raw_mooncake), resolve=True)
+            try:
+                mooncake_cfg = MooncakeCollectorConfig(**raw_dict)
+            except TypeError as e:
+                raise ConfigError(f"mooncake config invalid: {e}") from e
+
         # ── Validate and construct ─────────────────────────────────
         result = cls(
             strategies=strategies,
             collector=collector_cfg,
             cache_store=cache_store_cfg,
+            mooncake=mooncake_cfg,
         )
         result.validate()
         return result

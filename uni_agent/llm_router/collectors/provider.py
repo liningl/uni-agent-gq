@@ -22,9 +22,11 @@ from typing import Any
 from uni_agent.llm_router.config.router import CollectorConfig
 from uni_agent.llm_router.collectors.collector.polling_collector import PollingCollector
 from uni_agent.llm_router.collectors.collector.event_collector import EventCollector
+from uni_agent.llm_router.collectors.collector.vllm.event_collector import VLLMKVEventCollector
 from uni_agent.llm_router.collectors.hash import get_prefix_hashes
 from uni_agent.llm_router.collectors.store.kv_cache_store import KVCacheStore
 from uni_agent.llm_router.collectors.store.metrics_store import MetricsStore
+from uni_agent.llm_router.collectors.store.mooncake_tier_store import MooncakeTierStore
 from uni_agent.llm_router.collectors.registry import BUILTIN_REGISTRY
 from uni_agent.llm_router.logging import get_router_logger
 
@@ -54,8 +56,11 @@ class RouteDataProvider:
         collection_names,
         server_addresses: dict[str, str] | None = None,
         kv_event_endpoints: dict[str, list[str]] | None = None,
+        mooncake_config=None,
     ) -> None:
         self._collection_names = collection_names
+        self._mooncake_config = mooncake_config
+        self._mooncake_store: Any = None
 
         # ── Create stores (deduplicated by class) and collectors ────────
         self._stores: dict[type, Any] = {}
@@ -78,11 +83,47 @@ class RouteDataProvider:
                 )
             else:
                 self._collectors.append(collector_cls(config=collectors_config))
+
+        # ── Wire MooncakeTierStore into VLLMKVEventCollector if both present ──
+        if MooncakeTierStore in self._stores:
+            tier_store = self._stores[MooncakeTierStore]
+            for collector in self._collectors:
+                if isinstance(collector, VLLMKVEventCollector):
+                    collector.tier_store = tier_store
+                    logger.info("MooncakeTierStore injected into VLLMKVEventCollector")
+                    break
+
+        # ── Connect to MooncakeDistributedStore if config provided ────────
+        if mooncake_config is not None and MooncakeTierStore in self._stores:
+            self._setup_mooncake_store(mooncake_config)
+
         logger.info(
             f"RouteDataProvider created: collection_names={collection_names}, "
             f"collectors=[{', '.join(type(c).__name__ for c in self._collectors) or '<none>'}], "
             f"stores=[{', '.join(s.__name__ for s in self._stores) or '<none>'}]",
         )
+
+    def _setup_mooncake_store(self, mooncake_config: Any) -> None:
+        """Connect MooncakeDistributedStore for batch_get_replica_desc queries."""
+        try:
+            from mooncake.store import MooncakeDistributedStore
+            store = MooncakeDistributedStore()
+            ret = store.setup(
+                mooncake_config.local_hostname,
+                mooncake_config.metadata_server,
+                mooncake_config.global_segment_size,
+                mooncake_config.local_buffer_size,
+                mooncake_config.protocol,
+                mooncake_config.device_name,
+                mooncake_config.master_server_address,
+            )
+            if ret != 0:
+                logger.warning(f"MooncakeDistributedStore setup returned {ret}, tier queries disabled")
+                return
+            self._mooncake_store = store
+            logger.info("MooncakeDistributedStore connected for tier queries")
+        except Exception as e:
+            logger.warning(f"Failed to connect MooncakeDistributedStore: {e}, tier queries disabled")
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -185,29 +226,96 @@ class RouteDataProvider:
     def get_tier_prefix_hit_rate(
         self, node_id: str, prompt_ids: list[int], tier: str,
     ) -> float | None:
-        """Query tier-level prefix cache hit rate (slow-path data).
+        """Query tier-level prefix cache hit rate via mooncake batch_get_replica_desc.
 
-        v1: reads from snapshot (PollingCollector for Mooncake metrics).
-        v2: calls Mooncake /batch_query_keys API for real-time query.
+        Resolves local xxhash prefix hashes → remote block_hash_hex → mooncake keys,
+        then calls batch_get_replica_desc synchronously and classifies descriptors.
 
         Args:
-            node_id: Target node.
+            node_id: Target node (unused — queries are global to the mooncake store).
             prompt_ids: Current request's prompt token IDs.
-            tier: ``"cpu"`` or ``"ssd"``.
+            tier: ``"cpu"`` (MEMORY replicas) or ``"ssd"`` (LOCAL_DISK / NOF_SSD).
 
         Returns:
-            Hit rate 0.0–1.0, or ``None`` when no tier data is available
-            (mooncake collector not yet implemented). Callers should treat
-            ``None`` as "data missing" and degrade to 0 with a warning,
-            NOT as a genuine 0% hit.
+            Hit rate 0.0–1.0, or ``None`` when mooncake store not connected or
+            no block mappings exist yet.
         """
-        # v1 placeholder — mooncake tier collector is not yet implemented.
-        # Return None (not 0.0) so the slow-path caller can distinguish
-        # "no data" from a real miss and warn appropriately.
-        return None
+        if self._mooncake_store is None or self._mooncake_config is None:
+            return None
+        if MooncakeTierStore not in self._stores:
+            return None
+
+        kv_store = self._kv_store
+        if kv_store.block_size is None:
+            return None
+
+        prefix_hashes = get_prefix_hashes(prompt_ids, kv_store.block_size)
+        if not prefix_hashes:
+            return None
+
+        tier_store: MooncakeTierStore = self._stores[MooncakeTierStore]
+        hash_strs = [str(h) for h in prefix_hashes]
+        remote_hexes = tier_store.get_remote_hexes(hash_strs)
+
+        # Filter to blocks we have remote hex for
+        available = [(hs, hex_) for hs, hex_ in zip(hash_strs, remote_hexes) if hex_ is not None]
+        logger.debug(f"get_tier_prefix_hit_rate: tier={tier!r} total_blocks={len(hash_strs)} available={len(available)}")
+        if not available:
+            return None
+
+        # Build mooncake keys: enumerate all tp_rank × pp_rank prefixes per block
+        prefixes = self._mooncake_config.key_prefixes()
+        keys: list[str] = []
+        for _, hex_ in available:
+            for prefix in prefixes:
+                keys.append(f"{prefix}@{hex_}")
+
+        try:
+            desc_map: dict = self._mooncake_store.batch_get_replica_desc(keys)
+        except Exception as e:
+            logger.warning(f"batch_get_replica_desc failed: {e}")
+            return None
+
+        logger.debug(f"get_tier_prefix_hit_rate: keys={len(keys)} desc_map_hits={sum(1 for v in desc_map.values() if v)}")
+
+        # Count blocks matching the requested tier
+        hit = 0
+        total = len(available)
+        for _, hex_ in available:
+            for prefix in prefixes:
+                key = f"{prefix}@{hex_}"
+                descs = desc_map.get(key)
+                if not descs:
+                    continue
+                desc = descs[0] if isinstance(descs, (list, tuple)) else descs
+                matched = _descriptor_matches_tier(desc, tier)
+                if matched:
+                    hit += 1
+                    break  # found a match for this block, move on
+
+        return hit / total
 
     def stop(self) -> None:
         """Stop all collectors and clean up."""
         logger.info(f"RouteDataProvider stopping {len(self._collectors)} collector(s)")
         for collector in self._collectors:
             collector.stop()
+
+
+def _descriptor_matches_tier(desc: Any, tier: str) -> bool:
+    """Return True if descriptor matches the requested tier.
+
+    Tier mapping:
+        "cpu"  → is_memory_replica()     (DRAM)
+        "ssd"  → is_local_disk_replica() (local SSD) OR is_nof_replica() (NVMe-oF)
+    """
+    if tier == "cpu":
+        m = getattr(desc, "is_memory_replica", None)
+        return bool(m()) if callable(m) else False
+    if tier == "ssd":
+        for method in ("is_local_disk_replica", "is_nof_replica"):
+            m = getattr(desc, method, None)
+            if callable(m) and m():
+                return True
+        return False
+    return False

@@ -32,6 +32,8 @@ NGPUS=${NGPUS:-8}                # GPUs per node
 TP=${TP:-2}                      # tensor parallel; dp = NGPUS*NNODES / TP
 MAX_NUM_SEQS=${MAX_NUM_SEQS:-64} # per-replica vLLM concurrency; 256 on large-VRAM, 64 on 24GB
 MAX_TURNS=${MAX_TURNS:-100}
+N=${N:-1}                # rollouts per prompt; set N>1 to repeat prompts for prefix cache testing
+
 MAX_SAMPLES=${MAX_SAMPLES:--1}   # -1 = full dataset
 PROMPT_LEN=${PROMPT_LEN:-32768}
 RESPONSE_LEN=${RESPONSE_LEN:-65536}
@@ -74,5 +76,5 @@ python ${PROJECT_ROOT}/examples/agent_interaction/parallel_infer.py \
     --prompt-length $PROMPT_LEN \
     --response-length $RESPONSE_LEN \
     --max-samples $MAX_SAMPLES \
-    --n 1 \
+    --n $N \
     "${ROUTER_ARGS[@]}"

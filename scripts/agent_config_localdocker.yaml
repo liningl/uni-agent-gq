@@ -3,7 +3,7 @@
   _target_: uni_agent.agent_loop.UniAgentLoop
 
   concurrency: 16
-  log_dir: /data1/hgq/agentic_log/
+  log_dir: /data1/lln/agentic_log/
   mask_abnormal_exit_traj: false
 
   interaction:
@@ -19,7 +19,7 @@
       container_runtime: docker
       extra_run_args:
         - "-v"
-        - "/data1/hgq/swe_wheels:/wheels:ro"
+        - "/data1/lln/swe_wheels:/wheels:ro"
     env_variables:
       PIP_PROGRESS_BAR: "off"
       PIP_CACHE_DIR: "~/.cache/pip"

@@ -15,7 +15,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DATA_PATH=${1:-${SCRIPT_DIR}/swe_bench_verified_modal.parquet}
-WHEELS_DIR=${WHEELS_DIR:-/data1/hgq/swe_wheels}
+WHEELS_DIR=${WHEELS_DIR:-/data1/lln/swe_wheels}
 PIP_INDEX=${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
 
 if [ ! -f "$DATA_PATH" ]; then
@@ -65,7 +65,7 @@ for img in sorted(imgs):
         skip += 1
         continue
     cr_img = f"{CR}/{inst}:v2"
-    if subprocess.run(["docker", "pull", cr_img], capture_output=True).returncode == 0:
+    if subprocess.run(["docker", "pull", cr_img]).returncode == 0:
         subprocess.run(["docker", "tag", cr_img, target], capture_output=True)
         ok += 1
     else:

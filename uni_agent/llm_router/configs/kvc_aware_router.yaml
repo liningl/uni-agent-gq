@@ -12,3 +12,20 @@ router_class: uni_agent.llm_router.balancer.KVCAwareBalancer
 strategies:
     kvc_aware_strategy:
         weight: 1.0
+        collector_names:
+            - vllm_zmq
+            - vllm_metrics
+            - mooncake_tier
+
+mooncake:
+    model_name: "Qwen3-4B"
+    tp_size: 2
+    pp_size: 1
+    cache_prefix: ""
+    metadata_server: "P2PHANDSHAKE"
+    local_hostname: "localhost"
+    global_segment_size: 2147483648
+    local_buffer_size: 2147483648
+    protocol: "tcp"
+    device_name: ""
+    master_server_address: "127.0.0.1:50051"

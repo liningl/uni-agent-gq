@@ -377,6 +377,41 @@ class TestKVCAwareFastSlow:
         # rep_b: 0.7*0.0 + 0.3*0.25 = 0.000 + 0.075 = 0.075
         assert scores == pytest.approx([0.595, 0.075])
 
+    def test_env_can_force_slow_path_when_gpu_hit_exists(self, monkeypatch):
+        """
+        Feature: verification can force tier slow path even when GPU hits exist
+        Description: set UNI_AGENT_FORCE_TIER_SLOW_PATH=1 with a healthy GPU-hit replica
+        Expectation: tier hit rates are queried and GPU hit scores are ignored
+        """
+        class _CountingProvider(FakeRouteDataProvider):
+            def __init__(self, data):
+                super().__init__(data)
+                self.tier_calls: list[tuple[str, str]] = []
+
+            def get_tier_prefix_hit_rate(self, replica_id, prompt_ids, tier):
+                self.tier_calls.append((replica_id, tier))
+                return super().get_tier_prefix_hit_rate(replica_id, prompt_ids, tier)
+
+        monkeypatch.setenv("UNI_AGENT_FORCE_TIER_SLOW_PATH", "1")
+        strat = _strat(alpha=0.7, load_threshold=0.1, layer_weights={"cpu": 1.0, "ssd": 0.25})
+        provider = _CountingProvider(
+            {
+                # rep_a has GPU hit, but forced slow path should use only SSD tier hit.
+                "rep_a": {"kv_cache_usage_perc": 0.3, "num_requests_running": 1, "num_requests_waiting": 0,
+                          "gpu_hit_pct": 70, "tiers": {"cpu": 0.0, "ssd": 1.0}},
+                "rep_b": {"kv_cache_usage_perc": 0.5, "num_requests_running": 1, "num_requests_waiting": 0,
+                          "gpu_hit_pct": 0, "tiers": {"cpu": 0.8, "ssd": 0.0}},
+            }
+        )
+        scores = strat.score(PROMPT_IDS, provider, _replicas("rep_a", "rep_b"))
+
+        # Forced slow path:
+        # rep_a: slow_cache = 0.0*1.0 + 1.0*0.25 = 0.25; score = 0.7*0.25 + 0.3*0.35 = 0.280
+        # rep_b: slow_cache = 0.8*1.0 + 0.0*0.25 = 0.80; score = 0.7*0.80 + 0.3*0.25 = 0.635
+        assert scores == pytest.approx([0.280, 0.635])
+        assert ("rep_a", "ssd") in provider.tier_calls
+        assert ("rep_b", "cpu") in provider.tier_calls
+
     def test_no_gpu_hit_uses_slow_path(self):
         """
         Feature: slow path activates when no healthy replica has GPU hit > 0

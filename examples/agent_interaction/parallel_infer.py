@@ -56,6 +56,12 @@ def init_config(args: argparse.Namespace) -> DictConfig:
     config.trainer.nnodes = args.nnodes
     config.trainer.n_gpus_per_node = args.n_gpus_per_node
 
+    # Disable sleep mode: requires cumem allocator (H100+), not supported on 3090.
+    from omegaconf import OmegaConf
+    OmegaConf.set_struct(config.actor_rollout_ref.rollout, False)
+    config.actor_rollout_ref.rollout.enable_sleep_mode = False
+    OmegaConf.set_struct(config.actor_rollout_ref.rollout, True)
+
     # Model and engine configs
     config.actor_rollout_ref.model.path = os.path.expanduser(args.model_path)
     config.actor_rollout_ref.rollout.name = args.engine
@@ -75,14 +81,26 @@ def init_config(args: argparse.Namespace) -> DictConfig:
     config.data.max_response_length = args.response_length
 
     if args.router_config_path and "kvc_aware_router.yaml" in args.router_config_path:
-        # kv-cache config with hybrid KV cache manager for Mamba-Attention hybrid models
+        # Emit full 32-byte hex block hashes so MooncakeTierStore can map
+        # local xxhash → remote sha256 for tier-aware routing.
+        os.environ["VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES"] = "0"
         vllm_kwargs = {
             "vllm": {
                 "kv-events-config": {
                     "enable_kv_cache_events": True,
                     "publisher": "zmq",
-                    "topic": "kv-events"
-                }
+                    "topic": "kv-events",
+                },
+                "kv-transfer-config": {
+                    "kv_connector": "MooncakeStoreConnector",
+                    "kv_role": "kv_both",
+                    "kv_connector_extra_config": {
+                        "master_server_address": "127.0.0.1:50051",
+                        "metadata_server": "P2PHANDSHAKE",
+                        "global_segment_size": 2147483648,
+                        "local_buffer_size": 2147483648,
+                    },
+                },
             }
         }
         config.actor_rollout_ref.rollout.engine_kwargs = vllm_kwargs

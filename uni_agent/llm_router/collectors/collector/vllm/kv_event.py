@@ -31,6 +31,7 @@ class KVCacheEvent:
     parent_block_hash: str | None
     token_ids: list[bytes] | None
     block_size: int | None
+    block_hashes_hex: list[str] | None = None
 
     # ── Factory ──────────────────────────────────────────────────────────
 
@@ -119,6 +120,15 @@ class KVCacheEvent:
         raw_token_ids = list(fields[2]) if fields[2] is not None else None
         block_size = int(fields[3])
 
+        # Derive hex hashes for mooncake key construction (bytes mode only).
+        # When VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES=0, vllm sends full 32-byte
+        # BlockHash values; .hex() produces the same string used in key_for().
+        raw_hashes = fields[0]
+        hexes = [bh.hex() if isinstance(bh, bytes) else None for bh in raw_hashes]
+        block_hashes_hex: list[str] | None = (
+            hexes if all(h is not None for h in hexes) else None  # type: ignore[arg-type]
+        )
+
         # Chop and encode token IDs into block-sized uint32 big-endian bytes
         token_ids = (
             _convert_token_ids(raw_token_ids, block_size)
@@ -132,7 +142,8 @@ class KVCacheEvent:
             block_hashes=block_hashes,
             parent_block_hash=parent_block_hash,
             token_ids=token_ids,
-            block_size=block_size
+            block_size=block_size,
+            block_hashes_hex=block_hashes_hex,
         )
 
     @classmethod

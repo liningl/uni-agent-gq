@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 from uni_agent.llm_router.collectors.metric_spec import MetricKey
@@ -121,16 +122,30 @@ class KVCacheAwareStrategy:
                 for idx, replica in enumerate(replicas)
             ]
 
+        force_tier_slow_path = os.getenv("UNI_AGENT_FORCE_TIER_SLOW_PATH", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
         # Some healthy replicas: query GPU hit for all at once.
         # get_gpu_prefix_hit_rate returns {replica_id: 0-100}; scale to 0-1.
-        gpu_hit_pct = provider.get_gpu_prefix_hit_rate(effective_prompt_ids)
+        gpu_hit_pct = (
+            {}
+            if force_tier_slow_path
+            else provider.get_gpu_prefix_hit_rate(effective_prompt_ids)
+        )
         gpu_hits = [
             0.0 if is_overloaded[idx]
             else gpu_hit_pct.get(replica.replica_id, 0) / 100.0
             for idx, replica in enumerate(replicas)
         ]
         use_fast = any(gpu_hits[idx] > 0 for idx in range(len(replicas)) if not is_overloaded[idx])
-        logger.debug(f"score(): path={'fast (GPU hit)' if use_fast else 'slow (tier cache)'}")
+        if force_tier_slow_path:
+            logger.debug("score(): path=slow (forced tier cache)")
+        else:
+            logger.debug(f"score(): path={'fast (GPU hit)' if use_fast else 'slow (tier cache)'}")
 
         result = []
         for idx, replica in enumerate(replicas):

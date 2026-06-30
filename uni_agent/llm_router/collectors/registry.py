@@ -12,8 +12,10 @@ from __future__ import annotations
 
 from uni_agent.llm_router.collectors.store.kv_cache_store import KVCacheStore
 from uni_agent.llm_router.collectors.store.metrics_store import MetricsStore
+from uni_agent.llm_router.collectors.store.mooncake_tier_store import MooncakeTierStore
 from uni_agent.llm_router.collectors.collector.vllm.event_collector import VLLMKVEventCollector
 from uni_agent.llm_router.collectors.collector.vllm.polling_collector import VLLMPollingCollector
+from uni_agent.llm_router.collectors.collector.mooncake_tier_collector import MooncakeTierCollector
 
 
 class Registry:
@@ -62,5 +64,7 @@ class Registry:
 BUILTIN_REGISTRY = Registry()
 BUILTIN_REGISTRY.register_collector("vllm_metrics", VLLMPollingCollector)
 BUILTIN_REGISTRY.register_collector("vllm_zmq", VLLMKVEventCollector)
+BUILTIN_REGISTRY.register_collector("mooncake_tier", MooncakeTierCollector)
 BUILTIN_REGISTRY.register_store("vllm_metrics", MetricsStore)
 BUILTIN_REGISTRY.register_store("vllm_zmq", KVCacheStore)
+BUILTIN_REGISTRY.register_store("mooncake_tier", MooncakeTierStore)
